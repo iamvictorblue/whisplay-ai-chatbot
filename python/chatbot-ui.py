@@ -1,4 +1,4 @@
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
 import os
 import time
 import socket
@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import signal
+import math
 
 # from whisplay import WhisplayBoard
 from whisplay import WhisplayBoard
@@ -24,9 +25,9 @@ from image_icon import ImageStatusIcon
 scroll_thread = None
 scroll_stop_event = threading.Event()
 
-status_font_size=20
-emoji_font_size=40
-battery_font_size=13
+status_font_size=10
+emoji_font_size=0
+battery_font_size=9
 
 # Global variables
 current_status = "Hello"
@@ -65,24 +66,78 @@ class RenderThread(threading.Thread):
         self.whisplay = whisplay
         self.font_path = font_path
         self.fps = fps
+        self.assets_root = os.path.dirname(__file__)
+        self.animation_start_ts = time.time()
+        self.last_text_update_at = 0.0
+        self.last_rendered_text = ""
+        self.portrait_variant_cache = {}
         self.render_init_screen()
         # Clear logo after 1 second and start running loop
         time.sleep(1)
         self.running = True
-        self.main_text_font = ImageFont.truetype(self.font_path, 20)
+        self.status_font = ImageFont.truetype(self.font_path, 10)
+        self.subline_font = ImageFont.truetype(self.font_path, 8)
+        self.panel_font = ImageFont.truetype(self.font_path, 9)
+        self.freq_font = ImageFont.truetype(self.font_path, 20)
+        self.voice_font = ImageFont.truetype(self.font_path, 9)
+        self.main_text_font = ImageFont.truetype(self.font_path, 16)
         self.main_text_line_height = self.main_text_font.getmetrics()[0] + self.main_text_font.getmetrics()[1]
-        self.text_cache_image = None
-        self.current_render_text = ""
+        self.caller_portrait = self.load_codec_portrait([
+            os.path.join("img", "MGS_PS1-Topless-snake.png"),
+            os.path.join("..", "web", "whisplay-display", "img", "MGS_PS1-Topless-snake.png"),
+            os.path.join("img", "logo.png"),
+            os.path.join("..", "web", "whisplay-display", "img", "logo.png"),
+        ])
+        self.callee_portrait = self.load_codec_portrait([
+            os.path.join("img", "MGS_PS1-Ocaton-final.png"),
+            os.path.join("..", "web", "whisplay-display", "img", "MGS_PS1-Ocaton-final.png"),
+            os.path.join("img", "logo.png"),
+            os.path.join("..", "web", "whisplay-display", "img", "logo.png"),
+        ])
+
+    def resolve_asset_path(self, candidates):
+        for relative_path in candidates:
+            candidate = os.path.abspath(os.path.join(self.assets_root, relative_path))
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def load_codec_portrait(self, candidates):
+        path = self.resolve_asset_path(candidates)
+        if not path:
+            return None
+        try:
+            image = Image.open(path).convert("RGBA")
+            gray = ImageOps.grayscale(image)
+            tinted = ImageOps.colorize(gray, black="#08120d", white="#88e0a8").convert("RGBA")
+            tinted = ImageEnhance.Contrast(tinted).enhance(1.25)
+            tinted = ImageEnhance.Brightness(tinted).enhance(0.92)
+            return tinted
+        except Exception as error:
+            print(f"[Render] Failed to load portrait {path}: {error}")
+            return None
+
+    def get_codec_mode(self, status_text):
+        normalized = (status_text or "").lower()
+        if ("error" in normalized) or ("offline" in normalized) or ("fail" in normalized):
+            return "alert"
+        if ("listen" in normalized) or ("wake" in normalized) or ("record" in normalized):
+            return "listening"
+        if ("answer" in normalized) or ("speak" in normalized) or ("reply" in normalized):
+            return "talking"
+        if time.time() - self.last_text_update_at < 0.9:
+            return "talking"
+        return "idle"
 
     def render_init_screen(self):
         # Display logo on startup
         logo_path = os.path.join("img", "logo.png")
         if os.path.exists(logo_path):
             logo_image = Image.open(logo_path).convert("RGBA")
-            logo_image = logo_image.resize((whisplay.LCD_WIDTH, whisplay.LCD_HEIGHT), Image.LANCZOS)
-            rgb565_data = ImageUtils.image_to_rgb565(logo_image, whisplay.LCD_WIDTH, whisplay.LCD_HEIGHT)
-            whisplay.set_backlight(100)
-            whisplay.draw_image(0, 0, whisplay.LCD_WIDTH, whisplay.LCD_HEIGHT, rgb565_data)
+            logo_image = logo_image.resize((self.whisplay.LCD_WIDTH, self.whisplay.LCD_HEIGHT), Image.LANCZOS)
+            rgb565_data = ImageUtils.image_to_rgb565(logo_image, self.whisplay.LCD_WIDTH, self.whisplay.LCD_HEIGHT)
+            self.whisplay.set_backlight(100)
+            self.whisplay.draw_image(0, 0, self.whisplay.LCD_WIDTH, self.whisplay.LCD_HEIGHT, rgb565_data)
 
     def render_frame(self, status, emoji, text, scroll_top, battery_level, battery_color):
         global current_scroll_speed, current_image_path, current_image, camera_mode
@@ -118,29 +173,145 @@ class RenderThread(threading.Thread):
                     print(f"[Render] Failed to load image {current_image_path}: {e}")
         else:
             current_image = None
-            header_height = 88 + 10  # header + margin
-            # create a black background image for header
-            image = Image.new("RGBA", (self.whisplay.LCD_WIDTH, header_height), (0, 0, 0, 255))
-            draw = ImageDraw.Draw(image)
-            
-            clock_font_size = 24
-            # clock_font = ImageFont.truetype(self.font_path, clock_font_size)
+            width = self.whisplay.LCD_WIDTH
+            height = self.whisplay.LCD_HEIGHT
+            mode = self.get_codec_mode(status)
+            now = time.time()
+            if text != self.last_rendered_text:
+                self.last_rendered_text = text
+                self.last_text_update_at = now
 
-            # current_time = time.strftime("%H:%M:%S")
-            # draw.text((self.whisplay.LCD_WIDTH // 2, self.whisplay.LCD_HEIGHT // 2), current_time, font=clock_font, fill=(255, 255, 255, 255))
-            
-            # render header
-            self.render_header(image, draw, status, emoji, battery_level, battery_color)
-            self.whisplay.draw_image(0, 0, self.whisplay.LCD_WIDTH, header_height, ImageUtils.image_to_rgb565(image, self.whisplay.LCD_WIDTH, header_height))
+            frame_image = Image.new("RGBA", (width, height), (3, 8, 6, 255))
+            draw = ImageDraw.Draw(frame_image)
 
-            # render main text area
-            text_area_height = self.whisplay.LCD_HEIGHT - header_height
-            text_bg_image = Image.new("RGBA", (self.whisplay.LCD_WIDTH, text_area_height), (0, 0, 0, 255))
-            text_draw = ImageDraw.Draw(text_bg_image)
-            self.render_main_text(text_bg_image, text_area_height, text_draw, text, current_scroll_speed)
-            self.whisplay.draw_image(0, header_height, self.whisplay.LCD_WIDTH, text_area_height, ImageUtils.image_to_rgb565(text_bg_image, self.whisplay.LCD_WIDTH, text_area_height))
+            self.render_header(frame_image, draw, status, emoji, battery_level, battery_color)
 
-        
+            top_panel = (6, 34, width - 7, 140)
+            dialog_panel = (6, 148, width - 7, height - 8)
+            panel_green = (92, 174, 127, 130)
+            panel_fill = (7, 18, 13, 238)
+
+            draw.rectangle(top_panel, fill=panel_fill, outline=panel_green, width=1)
+            draw.rectangle(dialog_panel, fill=(3, 8, 6, 244), outline=(126, 210, 157, 170), width=1)
+
+            left_x0 = top_panel[0] + 4
+            left_x1 = left_x0 + 56
+            right_x1 = top_panel[2] - 4
+            right_x0 = right_x1 - 56
+            center_x0 = left_x1 + 4
+            center_x1 = right_x0 - 4
+            portrait_y0 = top_panel[1] + 4
+            portrait_y1 = top_panel[3] - 4
+
+            self.draw_codec_portrait(
+                frame_image,
+                (left_x0, portrait_y0, left_x1, portrait_y1),
+                self.caller_portrait,
+                mode == "listening",
+                mode == "alert",
+            )
+            self.draw_codec_portrait(
+                frame_image,
+                (right_x0, portrait_y0, right_x1, portrait_y1),
+                self.callee_portrait,
+                mode == "talking",
+                mode == "alert",
+            )
+
+            center_rect = (center_x0, portrait_y0, center_x1, portrait_y1)
+            draw.rectangle(center_rect, fill=(10, 24, 18, 220), outline=(113, 200, 146, 200), width=1)
+            draw.text((center_rect[0] + (center_rect[2] - center_rect[0]) // 2 - 10, center_rect[1] + 2), "PTT", font=self.panel_font, fill=(103, 168, 126, 255))
+
+            meter_x0 = center_rect[0] + 8
+            meter_y0 = center_rect[1] + 18
+            meter_y1 = center_rect[1] + 74
+            segment_h = 4
+            segment_gap = 2
+            segment_count = 10
+            t = now - self.animation_start_ts
+            base_meter = 2
+            if mode == "talking":
+                base_meter = 6 + int((math.sin(t * 8.0) + 1.0) * 1.8)
+            elif mode == "listening":
+                base_meter = 4 + int((math.sin(t * 5.0) + 1.0) * 0.8)
+            elif mode == "alert":
+                base_meter = 1
+            for index in range(segment_count):
+                seg_y1 = meter_y1 - index * (segment_h + segment_gap)
+                seg_y0 = seg_y1 - segment_h
+                is_active = index < base_meter
+                color = (145, 250, 180, 255) if is_active else (57, 102, 74, 180)
+                draw.rectangle((meter_x0, seg_y0, meter_x0 + 14, seg_y1), fill=color)
+
+            drift = 0.0
+            if mode == "talking":
+                drift = math.sin(t * 2.5) * 0.04
+            elif mode == "listening":
+                drift = math.sin(t * 1.4) * 0.02
+            freq_text = f"{140.85 + drift:0.2f}"
+            freq_bbox = self.freq_font.getbbox(freq_text)
+            freq_w = freq_bbox[2] - freq_bbox[0]
+            freq_x = center_rect[0] + (center_rect[2] - center_rect[0] - freq_w) // 2 + 10
+            draw.text((freq_x, center_rect[1] + 32), freq_text, font=self.freq_font, fill=(142, 242, 176, 255))
+
+            voice_label = "STBY"
+            voice_color = (105, 168, 126, 255)
+            if mode == "talking":
+                voice_label = "RX"
+                voice_color = (182, 255, 205, 255)
+            elif mode == "listening":
+                voice_label = "LISTEN"
+            elif mode == "alert":
+                voice_label = "ALERT"
+                voice_color = (255, 126, 113, 255)
+            draw.text((center_rect[0] + 35, center_rect[1] + 58), voice_label, font=self.voice_font, fill=voice_color)
+            draw.text((center_rect[0] + 7, center_rect[3] - 10), "mem.", font=self.panel_font, fill=(102, 156, 120, 255))
+            draw.text((center_rect[2] - 31, center_rect[3] - 10), "tune", font=self.panel_font, fill=(102, 156, 120, 255))
+
+            self.render_main_text(frame_image, draw, text, dialog_panel, current_scroll_speed)
+
+            scanline = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            scan_draw = ImageDraw.Draw(scanline)
+            for y in range(0, height, 3):
+                scan_draw.line([(0, y), (width, y)], fill=(132, 214, 163, 16), width=1)
+            frame_image = Image.alpha_composite(frame_image, scanline)
+
+            rgb565_data = ImageUtils.image_to_rgb565(frame_image, width, height)
+            self.whisplay.draw_image(0, 0, width, height, rgb565_data)
+
+    def draw_codec_portrait(self, canvas, rect, portrait_image, active=False, alert=False):
+        x0, y0, x1, y1 = rect
+        width = max(1, x1 - x0 + 1)
+        height = max(1, y1 - y0 + 1)
+        panel = Image.new("RGBA", (width, height), (16, 34, 25, 235))
+        panel_draw = ImageDraw.Draw(panel)
+
+        if portrait_image is not None:
+            cache_key = (id(portrait_image), width, height, alert)
+            resized = self.portrait_variant_cache.get(cache_key)
+            if resized is None:
+                src_w, src_h = portrait_image.size
+                scale = max(width / src_w, height / src_h)
+                resized = portrait_image.resize((int(src_w * scale), int(src_h * scale)), Image.LANCZOS)
+                crop_x = max(0, (resized.width - width) // 2)
+                crop_y = max(0, (resized.height - height) // 2)
+                resized = resized.crop((crop_x, crop_y, crop_x + width, crop_y + height))
+                if alert:
+                    resized = ImageOps.colorize(ImageOps.grayscale(resized), black="#1a0908", white="#ff8f80").convert("RGBA")
+                self.portrait_variant_cache[cache_key] = resized
+            panel.paste(resized, (0, 0), resized)
+        else:
+            panel_draw.ellipse((18, 8, width - 18, height - 30), fill=(100, 180, 130, 70))
+            panel_draw.rectangle((18, height - 36, width - 18, height - 8), fill=(92, 170, 124, 80))
+
+        scan_offset = int(((time.time() - self.animation_start_ts) * 42) % (height + 22)) - 22
+        panel_draw.rectangle((0, scan_offset, width, scan_offset + 18), fill=(186, 255, 207, 38))
+        panel_draw.rectangle((0, 0, width - 1, height - 1), outline=(102, 190, 138, 190), width=1)
+        if active:
+            panel_draw.rectangle((1, 1, width - 2, height - 2), outline=(166, 255, 196, 190), width=1)
+        if alert:
+            panel_draw.rectangle((0, 0, width - 1, height - 1), outline=(255, 142, 126, 210), width=1)
+        canvas.paste(panel, (x0, y0), panel)
 
     def compute_scroll_target_from_char_end(self, lines, line_height, area_height, char_end):
         if char_end is None or char_end <= 0:
@@ -157,20 +328,22 @@ class RenderThread(threading.Thread):
         target_top = target_line * line_height - (area_height // 2)
         return max(0, target_top)
 
-    def render_main_text(self, main_text_image, area_height, draw, text, scroll_speed=2):
+    def render_main_text(self, canvas, draw, text, panel_rect, scroll_speed=2):
         global current_scroll_top, current_scroll_sync_char_end
         global current_scroll_sync_duration_ms, current_scroll_sync_target_top
         global current_scroll_sync_speed, current_scroll_sync_hold_until
-        """Render main text content, wrap lines according to screen width, only display currently visible part"""
+
         if not text:
             return
-        # Use main text font
-        font = ImageFont.truetype(self.font_path, 20)
-        lines = TextUtils.wrap_text(draw, text, font, self.whisplay.LCD_WIDTH - 20)
 
-        # Line height
+        x0, y0, x1, y1 = panel_rect
+        text_x = x0 + 10
+        text_y = y0 + 8
+        text_width = max(20, (x1 - x0) - 20)
+        area_height = max(20, (y1 - y0) - 16)
+
+        lines = TextUtils.wrap_text(draw, text, self.main_text_font, text_width)
         line_height = self.main_text_line_height
-
         max_scroll_top = max(0, (len(lines) + 1) * line_height - area_height)
 
         if current_scroll_sync_char_end is not None and current_scroll_sync_duration_ms is not None:
@@ -186,34 +359,13 @@ class RenderThread(threading.Thread):
             current_scroll_sync_char_end = None
             current_scroll_sync_duration_ms = None
 
-        # Calculate currently visible lines
-        display_lines = []
-        render_y = 0
-        fin_show_lines = False
-        for i, line in enumerate(lines):
-            if (i + 1) * line_height >= current_scroll_top and i * line_height - current_scroll_top <= area_height:
-                display_lines.append(line)
-                fin_show_lines = True
-            elif fin_show_lines is False:
-                render_y += line_height
-        
-        # render_text
-        render_text = ""
-        for line in display_lines:
-            render_text += line
-        if self.current_render_text != render_text:
-            self.current_render_text = render_text
-            show_text_image = Image.new("RGBA", (self.whisplay.LCD_WIDTH, render_y + len(display_lines) * line_height), (0, 0, 0, 255))
-            show_text_draw = ImageDraw.Draw(show_text_image)
-            for line in display_lines:
-                TextUtils.draw_mixed_text(show_text_draw, show_text_image, line, font, (10, render_y))
-                render_y += line_height
-            # Update cache image
-            self.text_cache_image = show_text_image
-        # Draw text_cache_image to main_text_image
-        main_text_image.paste(self.text_cache_image, (0, -int(current_scroll_top)), self.text_cache_image)
+        for index, line in enumerate(lines):
+            line_top = index * line_height
+            screen_y = text_y + line_top - int(current_scroll_top)
+            if screen_y + line_height < text_y or screen_y > text_y + area_height:
+                continue
+            TextUtils.draw_mixed_text(draw, canvas, line, self.main_text_font, (text_x, screen_y))
 
-        # Update scroll position
         if current_scroll_sync_speed is not None and current_scroll_sync_target_top is not None:
             remaining = current_scroll_sync_target_top - current_scroll_top
             if abs(remaining) <= abs(current_scroll_sync_speed):
@@ -235,33 +387,21 @@ class RenderThread(threading.Thread):
     def render_header(self, image, draw, status, emoji, battery_level, battery_color):
         global current_status, current_emoji, current_battery_level, current_battery_color
         global status_font_size, emoji_font_size, battery_font_size
-        
-        status_font = ImageFont.truetype(self.font_path, status_font_size)
-        emoji_font = ImageFont.truetype(self.font_path, emoji_font_size)
-        battery_font = ImageFont.truetype(self.font_path, battery_font_size)
 
         image_width = self.whisplay.LCD_WIDTH
+        bar_bottom = 29
+        draw.rectangle((0, 0, image_width - 1, bar_bottom), fill=(8, 18, 14, 250), outline=(94, 172, 128, 165), width=1)
+        draw.line((0, bar_bottom, image_width - 1, bar_bottom), fill=(116, 198, 150, 185), width=1)
 
-        ascent_status, _ = status_font.getmetrics()
-        ascent_emoji, _ = emoji_font.getmetrics()
+        status_text = (current_status or "standby").upper()
+        draw.text((8, 3), status_text, font=self.status_font, fill=(134, 234, 171, 255))
+        draw.text((8, 15), "secure tactical comms channel", font=self.subline_font, fill=(94, 158, 121, 255))
 
-        top_height = status_font_size + emoji_font_size + 20
-
-        # Draw status centered
-        status_bbox = status_font.getbbox(current_status)
-        status_w = status_bbox[2] - status_bbox[0]
-        TextUtils.draw_mixed_text(draw, image, current_status, status_font, (whisplay.CornerHeight, 0))
-
-        # Draw emoji centered
-        emoji_bbox = emoji_font.getbbox(current_emoji)
-        emoji_w = emoji_bbox[2] - emoji_bbox[0]
-        TextUtils.draw_mixed_text(draw, image, current_emoji, emoji_font, ((image_width - emoji_w) // 2, status_font_size + 8))
-        
         # Draw battery icon
         status_icon_context = {
             "battery_level": battery_level,
             "battery_color": battery_color,
-            "battery_font": battery_font,
+            "battery_font": self.subline_font,
             "status_font_size": status_font_size,
             "network_connected": current_network_connected,
             "rag_icon_visible": current_rag_icon_visible,
@@ -269,8 +409,6 @@ class RenderThread(threading.Thread):
         }
         status_icons = self.build_status_icons(status_icon_context)
         self.render_status_icons(draw, status_icons, image_width)
-        
-        return top_height
 
     def build_status_icons(self, context):
         icons = []
