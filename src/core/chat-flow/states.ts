@@ -13,7 +13,7 @@ import {
   recordAudioManually,
   recordFileFormat,
   getDynamicVoiceDetectLevel,
-  playCodecAlertTone,
+  playCodecAlertSound,
   playCodecPttDown,
   playCodecPttUp,
   playCodecStaticBurst,
@@ -235,7 +235,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
               RGB: "#000055",
             });
           } else {
-            void playCodecAlertTone();
+            void playCodecAlertSound();
             display({
               status: "error",
               emoji: "⚠️",

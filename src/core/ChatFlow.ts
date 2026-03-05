@@ -15,9 +15,28 @@ import { WhisplayIMBridgeServer } from "../device/im-bridge";
 import { FlowStateMachine } from "./chat-flow/stateMachine";
 import { flowStates } from "./chat-flow/states";
 import { ChatFlowContext, FlowName } from "./chat-flow/types";
-import { playWakeupChime } from "../device/audio";
+import {
+  playCodecAlertSound,
+  playCodecTriggerSound,
+  playWakeupChime,
+} from "../device/audio";
 
 dotEnv.config();
+
+const MGS_FACT_POOL: string[] = [
+  "the original Metal Gear launched on MSX2 in 1987 and established stealth as the core idea.",
+  "Metal Gear Solid released on PlayStation in 1998 and pushed cinematic storytelling in console games.",
+  "Solid Snake's support operator Otacon is Dr. Hal Emmerich.",
+  "Shadow Moses, the setting of Metal Gear Solid, is a remote Alaskan island nuclear facility.",
+  "Metal Gear REX was designed as a bipedal nuclear weapons platform.",
+  "the series made the cardboard box one of gaming's most iconic stealth tools.",
+  "the CODEC in Metal Gear Solid is a low-visibility communication system used during infiltration.",
+  "MGS alert phases are classically split into Alert, Evasion, and Caution before returning to normal.",
+  "FOXHOUND is the special operations unit central to multiple key events in the series.",
+  "Hideo Kojima directed and wrote major entries that defined the franchise tone.",
+  "Metal Gear Solid 2 switched protagonists for most of the story, which became one of gaming's famous twists.",
+  "many boss encounters in Metal Gear are designed as character-driven stories, not just combat checks.",
+];
 
 class ChatFlow implements ChatFlowContext {
   currentFlowName: FlowName = "sleep";
@@ -50,6 +69,18 @@ class ChatFlow implements ChatFlowContext {
   currentExternalEmoji: string = "";
   stateMachine: FlowStateMachine;
   isFromWakeListening: boolean = false;
+  mgsFactsEnabled: boolean =
+    (process.env.MGS_FACTS_ENABLED || "true").toLowerCase() === "true";
+  mgsFactsMinMs: number = Math.max(
+    60_000,
+    parseInt(process.env.MGS_FACTS_MIN_MINUTES || "12", 10) * 60_000,
+  );
+  mgsFactsMaxMs: number = Math.max(
+    Math.max(60_000, parseInt(process.env.MGS_FACTS_MIN_MINUTES || "12", 10) * 60_000),
+    parseInt(process.env.MGS_FACTS_MAX_MINUTES || "28", 10) * 60_000,
+  );
+  mgsFactsTimer: NodeJS.Timeout | null = null;
+  lastMgsFactIndex: number = -1;
 
   constructor(options: { enableCamera?: boolean } = {}) {
     console.log(`[${getCurrentTimeTag()}] ChatBot started.`);
@@ -121,6 +152,10 @@ class ChatFlow implements ChatFlowContext {
         },
       );
       this.whisplayIMBridge.start();
+    }
+
+    if (this.mgsFactsEnabled && !isImMode) {
+      this.scheduleNextMgsFact();
     }
   }
 
@@ -213,6 +248,72 @@ class ChatFlow implements ChatFlowContext {
     return this.wakeEndKeywords.some(
       (keyword) => keyword && lower.includes(keyword),
     );
+  };
+
+  private getNextMgsFactDelayMs = (): number => {
+    const span = this.mgsFactsMaxMs - this.mgsFactsMinMs;
+    if (span <= 0) {
+      return this.mgsFactsMinMs;
+    }
+    return this.mgsFactsMinMs + Math.floor(Math.random() * (span + 1));
+  };
+
+  private pickRandomMgsFact = (): string => {
+    if (MGS_FACT_POOL.length === 0) {
+      return "mission support channel is standing by.";
+    }
+    if (MGS_FACT_POOL.length === 1) {
+      this.lastMgsFactIndex = 0;
+      return MGS_FACT_POOL[0];
+    }
+    let index = this.lastMgsFactIndex;
+    while (index === this.lastMgsFactIndex) {
+      index = Math.floor(Math.random() * MGS_FACT_POOL.length);
+    }
+    this.lastMgsFactIndex = index;
+    return MGS_FACT_POOL[index];
+  };
+
+  private scheduleNextMgsFact = (): void => {
+    if (!this.mgsFactsEnabled) {
+      return;
+    }
+    if (this.mgsFactsTimer) {
+      clearTimeout(this.mgsFactsTimer);
+    }
+    const delayMs = this.getNextMgsFactDelayMs();
+    this.mgsFactsTimer = setTimeout(() => {
+      void this.triggerMgsFactBroadcast().finally(() => {
+        this.scheduleNextMgsFact();
+      });
+    }, delayMs);
+  };
+
+  private triggerMgsFactBroadcast = async (): Promise<void> => {
+    if (
+      this.currentFlowName !== "sleep" ||
+      this.wakeSessionActive ||
+      this.pendingExternalReply
+    ) {
+      return;
+    }
+    const fact = this.pickRandomMgsFact();
+    await playCodecTriggerSound();
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    await playCodecAlertSound();
+
+    if (
+      this.currentFlowName !== "sleep" ||
+      this.wakeSessionActive ||
+      this.pendingExternalReply
+    ) {
+      return;
+    }
+
+    this.pendingExternalReply = `Snake, intel update: ${fact}`;
+    this.pendingExternalEmoji = "";
+    this.currentExternalEmoji = "";
+    this.transitionTo("external_answer");
   };
 }
 

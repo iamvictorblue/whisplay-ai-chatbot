@@ -1,6 +1,8 @@
 import { spawn, ChildProcess } from "child_process";
 import { isEmpty, noop } from "lodash";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 import { ttsServer, asrServer } from "../cloud-api/server";
 import { pluginRegistry } from "../plugin";
 import type { ASRPlugin, TTSPlugin, AudioFormat } from "../plugin";
@@ -32,6 +34,8 @@ const codecAudioFxEnabled =
   (process.env.CODEC_AUDIO_FX || "true").toLowerCase() === "true";
 const codecSfxEnabled =
   (process.env.CODEC_SFX_ENABLED || "true").toLowerCase() === "true";
+const codecTriggerSoundPath = process.env.CODEC_TRIGGER_SOUND_PATH || "";
+const codecAlertSoundPath = process.env.CODEC_ALERT_SOUND_PATH || "";
 
 const defaultAsrAudioFormat: AudioFormat = [
   ASRServer.vosk,
@@ -49,6 +53,19 @@ export const recordFileFormat: AudioFormat = normalizeAudioFormat(
   selectedAsrPlugin?.audioFormat,
   defaultAsrAudioFormat,
 );
+
+const resolveOptionalSoundPath = (inputPath: string): string | null => {
+  if (!inputPath.trim()) {
+    return null;
+  }
+  const candidate = path.isAbsolute(inputPath)
+    ? inputPath
+    : path.resolve(process.cwd(), inputPath);
+  return fs.existsSync(candidate) ? candidate : null;
+};
+
+const resolvedCodecTriggerSoundPath = resolveOptionalSoundPath(codecTriggerSoundPath);
+const resolvedCodecAlertSoundPath = resolveOptionalSoundPath(codecAlertSoundPath);
 
 function startPlayerProcess() {
   if (useWavPlayer) {
@@ -119,6 +136,13 @@ const playSoxSynth = (args: string[], timeoutMs: number = 2200): Promise<void> =
   return runSoxCommand(["-n", "-t", "alsa", alsaOutputDevice, ...args], timeoutMs);
 };
 
+const playSfxFile = (filePath: string, timeoutMs: number = 6000): Promise<void> => {
+  if (!codecSfxEnabled) {
+    return Promise.resolve();
+  }
+  return runSoxCommand([filePath, "-t", "alsa", alsaOutputDevice, "gain", "-8"], timeoutMs);
+};
+
 let recordingProcessList: ChildProcess[] = [];
 let currentRecordingReject: (reason?: any) => void = noop;
 
@@ -133,7 +157,7 @@ const killAllRecordingProcesses = (): void => {
 };
 
 export const playWakeupChime = (): Promise<void> => {
-  return playCodecConnectChirp();
+  return playCodecTriggerSound();
 };
 
 export const playCodecConnectChirp = (): Promise<void> => {
@@ -173,6 +197,13 @@ export const playCodecConnectChirp = (): Promise<void> => {
     ],
     1600,
   );
+};
+
+export const playCodecTriggerSound = (): Promise<void> => {
+  if (resolvedCodecTriggerSoundPath) {
+    return playSfxFile(resolvedCodecTriggerSoundPath);
+  }
+  return playCodecConnectChirp();
 };
 
 export const playCodecPttDown = (): Promise<void> => {
@@ -282,6 +313,13 @@ export const playCodecAlertTone = (): Promise<void> => {
     ],
     1600,
   );
+};
+
+export const playCodecAlertSound = (): Promise<void> => {
+  if (resolvedCodecAlertSoundPath) {
+    return playSfxFile(resolvedCodecAlertSoundPath);
+  }
+  return playCodecAlertTone();
 };
 
 const recordAudio = async (
