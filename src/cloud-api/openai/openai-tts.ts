@@ -5,8 +5,14 @@ import { TTSResult } from "../../type";
 
 dotenv.config();
 
-const openAiVoiceModel = process.env.OPENAI_VOICE_MODEL || "tts-1"; // Default to tts-1
-const openAiVoiceType = process.env.OPENAI_VOICE_TYPE || "nova"; // Optional: alloy, echo, fable, onyx, nova, shimmer
+const openAiVoiceType = process.env.OPENAI_VOICE_TYPE || "onyx"; // Optional: alloy, echo, fable, onyx, nova, shimmer
+const openAiVoiceSpeedRaw = process.env.OPENAI_VOICE_SPEED || "0.92";
+const openAiVoiceSpeed = Number.parseFloat(openAiVoiceSpeedRaw);
+const normalizedVoiceSpeed =
+  Number.isFinite(openAiVoiceSpeed) && openAiVoiceSpeed >= 0.25 && openAiVoiceSpeed <= 4
+    ? openAiVoiceSpeed
+    : 0.92;
+const normalizedVoiceModel = process.env.OPENAI_VOICE_MODEL || "tts-1-hd";
 
 const openaiTTS = async (
   text: string
@@ -16,9 +22,10 @@ const openaiTTS = async (
     return { duration: 0 };
   }
   const mp3 = await openai.audio.speech.create({
-    model: openAiVoiceModel,
+    model: normalizedVoiceModel,
     voice: openAiVoiceType,
     input: text,
+    speed: normalizedVoiceSpeed,
   }).catch((error) => {
     console.log("OpenAI TTS failed:", error);
     return null;
