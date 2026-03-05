@@ -13,6 +13,10 @@ import {
   recordAudioManually,
   recordFileFormat,
   getDynamicVoiceDetectLevel,
+  playCodecAlertTone,
+  playCodecPttDown,
+  playCodecPttUp,
+  playCodecStaticBurst,
 } from "../../device/audio";
 import { chatWithLLMStream } from "../../cloud-api/server";
 import { isImMode } from "../../cloud-api/llm";
@@ -102,8 +106,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
     onButtonPressed(noop);
+    void playCodecPttDown();
     const { result, stop } = recordAudioManually(ctx.currentRecordFilePath);
     onButtonReleased(() => {
+      void playCodecPttUp();
       stop();
       display({
         RGB: "#ff6800",
@@ -204,6 +210,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     });
   },
   answer: (ctx: ChatFlowContext) => {
+    void playCodecStaticBurst();
     display({
       status: "answering...",
       RGB: "#00c8a3",
@@ -228,6 +235,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
               RGB: "#000055",
             });
           } else {
+            void playCodecAlertTone();
             display({
               status: "error",
               emoji: "⚠️",
@@ -356,6 +364,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       ctx.transitionTo("sleep");
       return;
     }
+    void playCodecStaticBurst();
     display({
       status: "answering...",
       RGB: "#00c8a3",

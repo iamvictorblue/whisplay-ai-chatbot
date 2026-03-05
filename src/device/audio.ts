@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from "child_process";
-import { isEmpty, noop, set } from "lodash";
+import { isEmpty, noop } from "lodash";
 import dotenv from "dotenv";
 import { ttsServer, asrServer } from "../cloud-api/server";
 import { pluginRegistry } from "../plugin";
@@ -28,6 +28,10 @@ const ttsAudioFormat: AudioFormat = normalizeAudioFormat(
 );
 
 const useWavPlayer = ttsAudioFormat === "wav";
+const codecAudioFxEnabled =
+  (process.env.CODEC_AUDIO_FX || "true").toLowerCase() === "true";
+const codecSfxEnabled =
+  (process.env.CODEC_SFX_ENABLED || "true").toLowerCase() === "true";
 
 const defaultAsrAudioFormat: AudioFormat = [
   ASRServer.vosk,
@@ -63,6 +67,58 @@ function startPlayerProcess() {
   }
 }
 
+const getCodecVoiceEffects = (): string[] => [
+  "highpass",
+  "280",
+  "lowpass",
+  "3200",
+  "compand",
+  "0.02,0.10",
+  "6:-70,-60,-20",
+  "-5",
+  "-90",
+  "0.15",
+  "gain",
+  "-4",
+];
+
+const runSoxCommand = (
+  args: string[],
+  timeoutMs: number = 2200,
+): Promise<void> => {
+  return new Promise((resolve) => {
+    let timeout: NodeJS.Timeout | null = null;
+    let finished = false;
+    const done = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      resolve();
+    };
+    const process = spawn("sox", args);
+    process.on("error", done);
+    process.on("exit", done);
+    timeout = setTimeout(() => {
+      try {
+        process.kill("SIGTERM");
+      } catch {}
+      done();
+    }, timeoutMs);
+  });
+};
+
+const playSoxSynth = (args: string[], timeoutMs: number = 2200): Promise<void> => {
+  if (!codecSfxEnabled) {
+    return Promise.resolve();
+  }
+  return runSoxCommand(["-n", "-t", "alsa", alsaOutputDevice, ...args], timeoutMs);
+};
+
 let recordingProcessList: ChildProcess[] = [];
 let currentRecordingReject: (reason?: any) => void = noop;
 
@@ -77,61 +133,155 @@ const killAllRecordingProcesses = (): void => {
 };
 
 export const playWakeupChime = (): Promise<void> => {
-  return new Promise((resolve) => {
-    let finished = false;
-    const done = () => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      resolve();
-    };
+  return playCodecConnectChirp();
+};
 
-    //     play -n \
-    // synth 0.10 sine 720 vol 0.4 : \
-    // synth 0.12 sine 980 vol 0.35 : \
-    // synth 0.14 sine 1320 vol 0.3 \
-    // fade q 0.02 0.30 0.08 gain -30
-
-    const chimeProcess = spawn("sox", [
-      "-n",
-      "-t",
-      "alsa",
-      alsaOutputDevice,
+export const playCodecConnectChirp = (): Promise<void> => {
+  return playSoxSynth(
+    [
       "synth",
-      "0.10",
+      "0.05",
       "sine",
-      "720",
-      "vol",
-      "0.4",
-      ":",
-      "synth",
-      "0.12",
-      "sine",
-      "980",
+      "640",
       "vol",
       "0.35",
       ":",
       "synth",
-      "0.14",
+      "0.05",
       "sine",
-      "1320",
+      "910",
       "vol",
       "0.3",
+      ":",
+      "synth",
+      "0.05",
+      "sine",
+      "1180",
+      "vol",
+      "0.24",
       "fade",
       "q",
-      "0.02",
-      "0.30",
-      "0.08",
+      "0.01",
+      "0.18",
+      "0.03",
+      "highpass",
+      "350",
+      "lowpass",
+      "3200",
       "gain",
-      "-30",
-    ]);
+      "-22",
+    ],
+    1600,
+  );
+};
 
-    chimeProcess.on("error", done);
-    chimeProcess.on("exit", done);
+export const playCodecPttDown = (): Promise<void> => {
+  return playSoxSynth(
+    [
+      "synth",
+      "0.025",
+      "square",
+      "2200",
+      "vol",
+      "0.22",
+      "fade",
+      "q",
+      "0.002",
+      "0.03",
+      "0.01",
+      "highpass",
+      "550",
+      "lowpass",
+      "4200",
+      "gain",
+      "-24",
+    ],
+    900,
+  );
+};
 
-    setTimeout(done, 1500);
-  });
+export const playCodecPttUp = (): Promise<void> => {
+  return playSoxSynth(
+    [
+      "synth",
+      "0.02",
+      "square",
+      "1500",
+      "vol",
+      "0.2",
+      "fade",
+      "q",
+      "0.002",
+      "0.025",
+      "0.01",
+      "highpass",
+      "500",
+      "lowpass",
+      "3500",
+      "gain",
+      "-25",
+    ],
+    900,
+  );
+};
+
+export const playCodecStaticBurst = (): Promise<void> => {
+  return playSoxSynth(
+    [
+      "synth",
+      "0.07",
+      "whitenoise",
+      "vol",
+      "0.16",
+      "highpass",
+      "1200",
+      "lowpass",
+      "5200",
+      "fade",
+      "q",
+      "0.002",
+      "0.07",
+      "0.02",
+      "gain",
+      "-28",
+    ],
+    1000,
+  );
+};
+
+export const playCodecAlertTone = (): Promise<void> => {
+  return playSoxSynth(
+    [
+      "synth",
+      "0.08",
+      "sine",
+      "860",
+      "vol",
+      "0.22",
+      ":",
+      "synth",
+      "0.08",
+      "sine",
+      "860",
+      "vol",
+      "0.22",
+      "delay",
+      "0.0",
+      "0.10",
+      "fade",
+      "q",
+      "0.01",
+      "0.24",
+      "0.04",
+      "highpass",
+      "380",
+      "lowpass",
+      "3100",
+      "gain",
+      "-22",
+    ],
+    1600,
+  );
 };
 
 const recordAudio = async (
@@ -258,6 +408,7 @@ const player: Player = {
   isPlaying: false,
   process: null,
 };
+let activePlaybackProcess: ChildProcess | null = null;
 
 setTimeout(() => {
   player.process = startPlayerProcess();
@@ -271,6 +422,9 @@ const playAudioData = (params: TTSResult): Promise<void> => {
   }
   // play wav file using aplay
   if (filePath) {
+    const playbackArgs = codecAudioFxEnabled
+      ? [filePath, "-t", "alsa", alsaOutputDevice, ...getCodecVoiceEffects()]
+      : [filePath, "-t", "alsa", alsaOutputDevice];
     return Promise.race([
       new Promise<void>((resolve) => {
         setTimeout(() => {
@@ -280,8 +434,10 @@ const playAudioData = (params: TTSResult): Promise<void> => {
       new Promise<void>((resolve, reject) => {
         console.log("Playback duration:", audioDuration);
         player.isPlaying = true;
-        const process = spawn("sox", [filePath, "-t", "alsa", alsaOutputDevice]);
+        const process = spawn("sox", playbackArgs);
+        activePlaybackProcess = process;
         process.on("close", (code: number) => {
+          activePlaybackProcess = null;
           player.isPlaying = false;
           if (code !== 0) {
             console.error(`Audio playback error: ${code}`);
@@ -300,9 +456,67 @@ const playAudioData = (params: TTSResult): Promise<void> => {
   // play wav/mp3 buffer based on configured TTS format
   return new Promise((resolve, reject) => {
     const audioBuffer = base64 ? Buffer.from(base64, "base64") : buffer;
+    if (!audioBuffer) {
+      resolve();
+      return;
+    }
     console.log("Playback duration:", audioDuration);
     player.isPlaying = true;
-    setTimeout(() => {
+
+    if (codecAudioFxEnabled) {
+      const soxInputType = ttsAudioFormat === "wav" ? "wav" : "mp3";
+      const process = spawn("sox", [
+        "-t",
+        soxInputType,
+        "-",
+        "-t",
+        "alsa",
+        alsaOutputDevice,
+        ...getCodecVoiceEffects(),
+      ]);
+      activePlaybackProcess = process;
+      let settled = false;
+      const finishSuccess = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        player.isPlaying = false;
+        console.log("Audio playback completed");
+        resolve();
+      };
+      const finishError = (code: number | null) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        player.isPlaying = false;
+        console.error(`Audio playback error: ${code}`);
+        reject(code);
+      };
+      const timeout = setTimeout(() => {
+        try {
+          process.kill("SIGTERM");
+        } catch {}
+        finishSuccess();
+      }, audioDuration + 1200);
+
+      process.stdout?.on("data", (data) => console.log(data.toString()));
+      process.stderr?.on("data", (data) => console.error(data.toString()));
+      process.on("exit", (code) => {
+        clearTimeout(timeout);
+        activePlaybackProcess = null;
+        if (code !== 0) {
+          finishError(code);
+        } else {
+          finishSuccess();
+        }
+      });
+      process.stdin?.end(audioBuffer);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
       resolve();
       player.isPlaying = false;
       console.log("Audio playback completed");
@@ -317,9 +531,12 @@ const playAudioData = (params: TTSResult): Promise<void> => {
         "alsa",
         alsaOutputDevice,
       ]);
+      activePlaybackProcess = process;
       process.stdout?.on("data", (data) => console.log(data.toString()));
       process.stderr?.on("data", (data) => console.error(data.toString()));
       process.on("exit", (code) => {
+        clearTimeout(timeout);
+        activePlaybackProcess = null;
         player.isPlaying = false;
         if (code !== 0) {
           console.error(`Audio playback error: ${code}`);
@@ -335,6 +552,7 @@ const playAudioData = (params: TTSResult): Promise<void> => {
 
     const process = player.process;
     if (!process) {
+      clearTimeout(timeout);
       return reject(new Error("Audio player is not initialized."));
     }
 
@@ -344,6 +562,7 @@ const playAudioData = (params: TTSResult): Promise<void> => {
     process.stdout?.on("data", (data) => console.log(data.toString()));
     process.stderr?.on("data", (data) => console.error(data.toString()));
     process.on("exit", (code) => {
+      clearTimeout(timeout);
       player.isPlaying = false;
       if (code !== 0) {
         console.error(`Audio playback error: ${code}`);
@@ -360,6 +579,10 @@ const stopPlaying = (): void => {
   if (player.isPlaying) {
     try {
       console.log("Stopping audio playback");
+      if (activePlaybackProcess) {
+        activePlaybackProcess.kill("SIGTERM");
+        activePlaybackProcess = null;
+      }
       const process = player.process;
       if (process) {
         process.stdin?.end();
@@ -379,6 +602,10 @@ const stopPlaying = (): void => {
 // Close audio player when exiting program
 process.on("SIGINT", () => {
   try {
+    if (activePlaybackProcess) {
+      activePlaybackProcess.kill("SIGTERM");
+      activePlaybackProcess = null;
+    }
     if (player.process) {
       player.process.stdin?.end();
       player.process.kill();

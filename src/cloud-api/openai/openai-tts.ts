@@ -5,13 +5,17 @@ import { TTSResult } from "../../type";
 
 dotenv.config();
 
-const openAiVoiceType = process.env.OPENAI_VOICE_TYPE || "onyx"; // Optional: alloy, echo, fable, onyx, nova, shimmer
-const openAiVoiceSpeedRaw = process.env.OPENAI_VOICE_SPEED || "0.92";
+const otaconModeEnabled = (process.env.OTACON_MODE || "true").toLowerCase() === "true";
+const defaultVoiceType = otaconModeEnabled ? "fable" : "onyx";
+const defaultVoiceSpeed = otaconModeEnabled ? "0.98" : "0.92";
+
+const openAiVoiceType = process.env.OPENAI_VOICE_TYPE || defaultVoiceType; // Optional: alloy, echo, fable, onyx, nova, shimmer
+const openAiVoiceSpeedRaw = process.env.OPENAI_VOICE_SPEED || defaultVoiceSpeed;
 const openAiVoiceSpeed = Number.parseFloat(openAiVoiceSpeedRaw);
 const normalizedVoiceSpeed =
   Number.isFinite(openAiVoiceSpeed) && openAiVoiceSpeed >= 0.25 && openAiVoiceSpeed <= 4
     ? openAiVoiceSpeed
-    : 0.92;
+    : Number.parseFloat(defaultVoiceSpeed);
 const normalizedVoiceModel = process.env.OPENAI_VOICE_MODEL || "tts-1-hd";
 
 const openaiTTS = async (
