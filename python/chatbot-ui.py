@@ -394,8 +394,9 @@ class RenderThread(threading.Thread):
         draw.line((0, bar_bottom, image_width - 1, bar_bottom), fill=(116, 198, 150, 185), width=1)
 
         status_text = (current_status or "standby").upper()
-        draw.text((8, 3), status_text, font=self.status_font, fill=(134, 234, 171, 255))
-        draw.text((8, 15), "secure tactical comms channel", font=self.subline_font, fill=(94, 158, 121, 255))
+        header_text_x = 12
+        draw.text((header_text_x, 3), status_text, font=self.status_font, fill=(134, 234, 171, 255))
+        draw.text((header_text_x, 15), "secure tactical comms channel", font=self.subline_font, fill=(94, 158, 121, 255))
 
         # Draw battery icon
         status_icon_context = {

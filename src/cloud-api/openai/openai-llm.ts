@@ -25,7 +25,10 @@ import {
 
 dotenv.config();
 // OpenAI LLM
-const openaiLLMModel = process.env.OPENAI_LLM_MODEL || "gpt-4o"; // Default model
+const lowLatencyMode =
+  (process.env.LOW_LATENCY_MODE || "false").toLowerCase() === "true";
+const openaiLLMModel =
+  process.env.OPENAI_LLM_MODEL || (lowLatencyMode ? "gpt-4o-mini" : "gpt-4o"); // Default model
 const openaiEnableTools =
   (process.env.OPENAI_ENABLE_TOOLS || "true").toLowerCase() === "true";
 const shouldIncludeTools = openaiEnableTools;

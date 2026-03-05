@@ -4,6 +4,14 @@ import { playAudioData, stopPlaying } from "../device/audio";
 import { TTSResult } from "../type";
 
 dotenv.config();
+const lowLatencyMode = (process.env.LOW_LATENCY_MODE || "false").toLowerCase() === "true";
+const ttsQueueIdleWaitMs = Math.max(
+  120,
+  parseInt(
+    process.env.TTS_QUEUE_IDLE_WAIT_MS || (lowLatencyMode ? "300" : "1000"),
+    10,
+  ) || (lowLatencyMode ? 300 : 1000),
+);
 
 type TTSFunc = (text: string) => Promise<TTSResult>;
 type SentencesCallback = (sentences: string[]) => void;
@@ -88,7 +96,7 @@ export class StreamResponser {
         currentIndex++;
         playNext();
       } else if (this.partialContent) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, ttsQueueIdleWaitMs));
         playNext();
       } else {
         console.log(

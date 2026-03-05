@@ -69,6 +69,12 @@ class ChatFlow implements ChatFlowContext {
   currentExternalEmoji: string = "";
   stateMachine: FlowStateMachine;
   isFromWakeListening: boolean = false;
+  lowLatencyMode: boolean =
+    (process.env.LOW_LATENCY_MODE || "false").toLowerCase() === "true";
+  externalReplyChunkDelayMs: number = parseInt(
+    process.env.EXTERNAL_REPLY_CHUNK_DELAY_MS || "0",
+    10,
+  );
   mgsFactsEnabled: boolean =
     (process.env.MGS_FACTS_ENABLED || "true").toLowerCase() === "true";
   mgsFactsMinMs: number = Math.max(
@@ -218,7 +224,13 @@ class ChatFlow implements ChatFlowContext {
     }
     for (const part of parts) {
       this.streamResponser.partial(part);
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      const chunkDelay =
+        this.externalReplyChunkDelayMs > 0
+          ? this.externalReplyChunkDelayMs
+          : this.lowLatencyMode
+            ? 40
+            : 120;
+      await new Promise((resolve) => setTimeout(resolve, chunkDelay));
     }
     this.streamResponser.endPartial();
   };

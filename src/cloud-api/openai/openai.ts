@@ -6,10 +6,15 @@ dotenv.config();
 
 const openAiAPIKey = process.env.OPENAI_API_KEY;
 const openAiBaseURL = process.env.OPENAI_API_BASE_URL;
+const lowLatencyMode =
+  (process.env.LOW_LATENCY_MODE || "false").toLowerCase() === "true";
 // OpenAI LLM
-export const openaiLLMModel = process.env.OPENAI_LLM_MODEL || "gpt-4o"; // Default model
+export const openaiLLMModel =
+  process.env.OPENAI_LLM_MODEL || (lowLatencyMode ? "gpt-4o-mini" : "gpt-4o"); // Default model
 export const openaiVisionModel =
-  process.env.OPENAI_VISION_MODEL || process.env.OPENAI_LLM_MODEL || "gpt-4o";
+  process.env.OPENAI_VISION_MODEL ||
+  process.env.OPENAI_LLM_MODEL ||
+  (lowLatencyMode ? "gpt-4o-mini" : "gpt-4o");
 
 // OpenAI Image Generation
 export const openaiImageModel = process.env.OPENAI_IMAGE_MODEL || "dall-e-3";
