@@ -43,4 +43,5 @@ export interface ChatFlowContext {
   shouldContinueWakeSession: () => boolean;
   shouldEndAfterAnswer: (text: string) => boolean;
   streamExternalReply: (text: string, emoji?: string) => Promise<void>;
+  handleLocalCommand: (text: string) => Promise<boolean>;
 }

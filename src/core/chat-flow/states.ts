@@ -186,13 +186,29 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       }
       if (result) {
         console.log("Audio recognized result:", result);
-        ctx.asrText = result;
-        ctx.endAfterAnswer = ctx.shouldEndAfterAnswer(result);
         if (ctx.wakeSessionActive) {
           ctx.wakeSessionLastSpeechAt = Date.now();
         }
-        display({ status: "recognizing", text: result });
-        ctx.transitionTo("answer");
+        void ctx
+          .handleLocalCommand(result)
+          .then((handled) => {
+            if (ctx.currentFlowName !== "asr") return;
+            if (handled) {
+              return;
+            }
+            ctx.asrText = result;
+            ctx.endAfterAnswer = ctx.shouldEndAfterAnswer(result);
+            display({ status: "recognizing", text: result });
+            ctx.transitionTo("answer");
+          })
+          .catch((error) => {
+            console.error("Local command handling error:", error);
+            if (ctx.currentFlowName !== "asr") return;
+            ctx.asrText = result;
+            ctx.endAfterAnswer = ctx.shouldEndAfterAnswer(result);
+            display({ status: "recognizing", text: result });
+            ctx.transitionTo("answer");
+          });
         return;
       }
       if (ctx.wakeSessionActive) {

@@ -8,7 +8,7 @@ import { recognizeAudio, ttsProcessor } from "../cloud-api/server";
 import { isImMode } from "../cloud-api/llm";
 import { extractEmojis } from "../utils";
 import { StreamResponser } from "./StreamResponsor";
-import { recordingsDir } from "../utils/dir";
+import { dataDir, recordingsDir } from "../utils/dir";
 import dotEnv from "dotenv";
 import { WakeWordListener } from "../device/wakeword";
 import { WhisplayIMBridgeServer } from "../device/im-bridge";
@@ -17,8 +17,11 @@ import { flowStates } from "./chat-flow/states";
 import { ChatFlowContext, FlowName } from "./chat-flow/types";
 import {
   playCodecAlertSound,
+  playCodecTriggerSound,
   playWakeupChime,
 } from "../device/audio";
+import { parseLocalCommand } from "./local-commands";
+import { ReminderStore } from "./reminder-store";
 
 dotEnv.config();
 
@@ -86,10 +89,43 @@ class ChatFlow implements ChatFlowContext {
   );
   mgsFactsTimer: NodeJS.Timeout | null = null;
   lastMgsFactIndex: number = -1;
+  reminderStorePath: string =
+    process.env.REMINDER_STORE_PATH || `${dataDir}/reminders.json`;
+  reminderStoreMaxItems: number = Math.max(
+    1,
+    parseInt(process.env.REMINDER_STORE_MAX_ITEMS || "120", 10),
+  );
+  reminderStore: ReminderStore;
+  missionDefaultMinutes: number = Math.max(
+    1,
+    parseInt(process.env.MISSION_DEFAULT_MINUTES || "25", 10),
+  );
+  missionBreakMinutes: number = Math.max(
+    1,
+    parseInt(process.env.MISSION_BREAK_MINUTES || "5", 10),
+  );
+  missionMaxMinutes: number = Math.max(
+    1,
+    parseInt(process.env.MISSION_MAX_MINUTES || "180", 10),
+  );
+  missionFocusMinutes: number = this.missionDefaultMinutes;
+  missionPhase: "idle" | "focus" | "break" = "idle";
+  missionPaused: boolean = false;
+  missionEndsAt: number = 0;
+  missionRemainingMs: number = 0;
+  missionRound: number = 0;
+  missionTimer: NodeJS.Timeout | null = null;
+  systemReplyQueue: Array<{ text: string; alert: boolean; trigger: boolean }> =
+    [];
+  isDispatchingSystemReply: boolean = false;
 
   constructor(options: { enableCamera?: boolean } = {}) {
     console.log(`[${getCurrentTimeTag()}] ChatBot started.`);
     this.recordingsDir = recordingsDir;
+    this.reminderStore = new ReminderStore(
+      this.reminderStorePath,
+      this.reminderStoreMaxItems,
+    );
     this.stateMachine = new FlowStateMachine(this, flowStates);
     this.streamResponser = new StreamResponser(
       ttsProcessor,
@@ -195,6 +231,9 @@ class ChatFlow implements ChatFlowContext {
   transitionTo = (flowName: FlowName): void => {
     console.log(`[${getCurrentTimeTag()}] switch to:`, flowName);
     this.stateMachine.transitionTo(flowName);
+    if (flowName === "sleep") {
+      setTimeout(() => this.flushSystemReplyQueue(), 20);
+    }
   };
 
   isAnswerFlow = (): boolean => {
@@ -259,6 +298,339 @@ class ChatFlow implements ChatFlowContext {
     return this.wakeEndKeywords.some(
       (keyword) => keyword && lower.includes(keyword),
     );
+  };
+
+  handleLocalCommand = async (text: string): Promise<boolean> => {
+    const command = parseLocalCommand(text);
+    if (!command) {
+      return false;
+    }
+
+    switch (command.type) {
+      case "add_reminder": {
+        const result = this.reminderStore.add(command.text);
+        if (!result.ok) {
+          if (result.reason === "limit") {
+            await this.sendImmediateLocalReply(
+              `Snake, reminder storage is full at ${this.reminderStoreMaxItems}. Delete one before adding more.`,
+              {},
+            );
+            return true;
+          }
+          await this.sendImmediateLocalReply(
+            "Snake, reminder text was empty. Say remind me to followed by the task.",
+            {},
+          );
+          return true;
+        }
+        const total = this.reminderStore.getAll().length;
+        await this.sendImmediateLocalReply(
+          `Snake, reminder saved as item ${total}.`,
+          {},
+        );
+        return true;
+      }
+      case "list_reminders": {
+        await this.sendImmediateLocalReply(this.buildReminderListReply(), {});
+        return true;
+      }
+      case "delete_reminder": {
+        const result = this.reminderStore.deleteByIndex(command.index);
+        if (!result.ok) {
+          await this.sendImmediateLocalReply(
+            `Snake, reminder ${command.index} was not found.`,
+            {},
+          );
+          return true;
+        }
+        await this.sendImmediateLocalReply(
+          `Snake, deleted reminder ${command.index}.`,
+          {},
+        );
+        return true;
+      }
+      case "clear_reminders": {
+        const removed = this.reminderStore.clear();
+        await this.sendImmediateLocalReply(
+          removed > 0
+            ? `Snake, cleared ${removed} reminders.`
+            : "Snake, reminder list is already empty.",
+          {},
+        );
+        return true;
+      }
+      case "start_mission": {
+        const requestedMinutes = command.minutes ?? this.missionDefaultMinutes;
+        if (requestedMinutes <= 0 || requestedMinutes > this.missionMaxMinutes) {
+          await this.sendImmediateLocalReply(
+            `Snake, mission time must be between 1 and ${this.missionMaxMinutes} minutes.`,
+            {},
+          );
+          return true;
+        }
+        const restarted = this.missionPhase !== "idle" || this.missionPaused;
+        this.missionFocusMinutes = requestedMinutes;
+        this.missionRound = 1;
+        this.missionPaused = false;
+        this.startMissionPhase("focus", requestedMinutes * 60_000);
+        await this.sendImmediateLocalReply(
+          restarted
+            ? `Snake, mission reset. Focus window is now ${requestedMinutes} minutes.`
+            : `Snake, mission started for ${requestedMinutes} minutes.`,
+          { trigger: true },
+        );
+        return true;
+      }
+      case "pause_mission": {
+        if (this.missionPhase === "idle") {
+          await this.sendImmediateLocalReply(
+            "Snake, there is no active mission to pause.",
+            {},
+          );
+          return true;
+        }
+        if (this.missionPaused) {
+          await this.sendImmediateLocalReply(
+            "Snake, mission is already paused.",
+            {},
+          );
+          return true;
+        }
+        this.clearMissionTimer();
+        this.missionRemainingMs = Math.max(1000, this.missionEndsAt - Date.now());
+        this.missionPaused = true;
+        await this.sendImmediateLocalReply(
+          `Snake, mission paused with ${this.formatDuration(this.missionRemainingMs)} remaining in ${this.missionPhase} phase.`,
+          {},
+        );
+        return true;
+      }
+      case "resume_mission": {
+        if (this.missionPhase === "idle") {
+          await this.sendImmediateLocalReply(
+            "Snake, there is no active mission to resume.",
+            {},
+          );
+          return true;
+        }
+        if (!this.missionPaused) {
+          await this.sendImmediateLocalReply(
+            "Snake, mission is already running.",
+            {},
+          );
+          return true;
+        }
+        this.missionPaused = false;
+        this.startMissionPhase(this.missionPhase, this.missionRemainingMs);
+        await this.sendImmediateLocalReply(
+          `Snake, mission resumed. ${this.formatDuration(this.missionRemainingMs)} remaining in ${this.missionPhase} phase.`,
+          {},
+        );
+        return true;
+      }
+      case "mission_status": {
+        await this.sendImmediateLocalReply(this.getMissionStatusReply(), {});
+        return true;
+      }
+      case "abort_mission": {
+        if (this.missionPhase === "idle") {
+          await this.sendImmediateLocalReply(
+            "Snake, there is no active mission to abort.",
+            {},
+          );
+          return true;
+        }
+        this.stopMission();
+        await this.sendImmediateLocalReply(
+          "Snake, mission aborted. Standing by.",
+          {},
+        );
+        return true;
+      }
+      default:
+        return false;
+    }
+  };
+
+  private buildReminderListReply = (): string => {
+    const reminders = this.reminderStore.getAll();
+    if (reminders.length === 0) {
+      return "Snake, you currently have no reminders.";
+    }
+    const maxRead = 8;
+    const lines = reminders.slice(0, maxRead).map((item, index) => {
+      return `${index + 1}. ${item}`;
+    });
+    if (reminders.length > maxRead) {
+      lines.push(`Plus ${reminders.length - maxRead} more reminders.`);
+    }
+    return `Snake, your reminders are: ${lines.join(" ")}`;
+  };
+
+  private formatDuration = (ms: number): string => {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes <= 0) {
+      return `${seconds} seconds`;
+    }
+    if (seconds === 0) {
+      return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+    }
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ${seconds} second${seconds === 1 ? "" : "s"}`;
+  };
+
+  private getMissionStatusReply = (): string => {
+    if (this.missionPhase === "idle") {
+      return "Snake, no mission timer is active.";
+    }
+    const remainingMs = this.missionPaused
+      ? this.missionRemainingMs
+      : Math.max(0, this.missionEndsAt - Date.now());
+    const phaseLabel = this.missionPhase === "focus" ? "focus" : "break";
+    const pauseLabel = this.missionPaused ? "paused" : "running";
+    return `Snake, mission is ${pauseLabel} in ${phaseLabel} phase with ${this.formatDuration(remainingMs)} remaining.`;
+  };
+
+  private clearMissionTimer = (): void => {
+    if (this.missionTimer) {
+      clearTimeout(this.missionTimer);
+      this.missionTimer = null;
+    }
+  };
+
+  private stopMission = (): void => {
+    this.clearMissionTimer();
+    this.missionPhase = "idle";
+    this.missionPaused = false;
+    this.missionEndsAt = 0;
+    this.missionRemainingMs = 0;
+    this.missionRound = 0;
+  };
+
+  private startMissionPhase = (phase: "focus" | "break", durationMs: number): void => {
+    const safeDuration = Math.max(1000, durationMs);
+    this.clearMissionTimer();
+    this.missionPhase = phase;
+    this.missionPaused = false;
+    this.missionRemainingMs = safeDuration;
+    this.missionEndsAt = Date.now() + safeDuration;
+    this.missionTimer = setTimeout(() => {
+      void this.handleMissionPhaseCompleted(phase);
+    }, safeDuration);
+  };
+
+  private handleMissionPhaseCompleted = async (
+    completedPhase: "focus" | "break",
+  ): Promise<void> => {
+    if (this.missionPaused || this.missionPhase !== completedPhase) {
+      return;
+    }
+    if (completedPhase === "focus") {
+      const breakMs = this.missionBreakMinutes * 60_000;
+      this.startMissionPhase("break", breakMs);
+      this.enqueueSystemReply(
+        `Snake, focus phase complete. Entering break for ${this.missionBreakMinutes} minutes.`,
+        { alert: true },
+      );
+      return;
+    }
+    this.missionRound += 1;
+    const focusMs = this.missionFocusMinutes * 60_000;
+    this.startMissionPhase("focus", focusMs);
+    this.enqueueSystemReply(
+      `Snake, break complete. Mission round ${this.missionRound} starts now. Focus for ${this.missionFocusMinutes} minutes.`,
+      { alert: true },
+    );
+  };
+
+  private enqueueSystemReply = (
+    text: string,
+    options: { alert?: boolean; trigger?: boolean } = {},
+  ): void => {
+    this.systemReplyQueue.push({
+      text,
+      alert: Boolean(options.alert),
+      trigger: Boolean(options.trigger),
+    });
+    this.flushSystemReplyQueue();
+  };
+
+  private flushSystemReplyQueue = (): void => {
+    if (this.isDispatchingSystemReply) {
+      return;
+    }
+    if (
+      this.currentFlowName !== "sleep" ||
+      this.wakeSessionActive ||
+      this.pendingExternalReply ||
+      this.systemReplyQueue.length === 0
+    ) {
+      return;
+    }
+    const next = this.systemReplyQueue.shift();
+    if (!next) {
+      return;
+    }
+    this.isDispatchingSystemReply = true;
+    void this.dispatchSystemReply(next).finally(() => {
+      this.isDispatchingSystemReply = false;
+      if (this.currentFlowName === "sleep") {
+        setTimeout(() => this.flushSystemReplyQueue(), 20);
+      }
+    });
+  };
+
+  private dispatchSystemReply = async (payload: {
+    text: string;
+    alert: boolean;
+    trigger: boolean;
+  }): Promise<void> => {
+    if (
+      this.currentFlowName !== "sleep" ||
+      this.wakeSessionActive ||
+      this.pendingExternalReply
+    ) {
+      this.systemReplyQueue.unshift(payload);
+      return;
+    }
+
+    if (payload.trigger) {
+      await playCodecTriggerSound();
+    }
+    if (payload.alert) {
+      await playCodecAlertSound();
+    }
+
+    if (
+      this.currentFlowName !== "sleep" ||
+      this.wakeSessionActive ||
+      this.pendingExternalReply
+    ) {
+      this.systemReplyQueue.unshift(payload);
+      return;
+    }
+
+    this.pendingExternalReply = payload.text;
+    this.pendingExternalEmoji = "";
+    this.currentExternalEmoji = "";
+    this.transitionTo("external_answer");
+  };
+
+  private sendImmediateLocalReply = async (
+    text: string,
+    options: { alert?: boolean; trigger?: boolean } = {},
+  ): Promise<void> => {
+    if (options.trigger) {
+      await playCodecTriggerSound();
+    }
+    if (options.alert) {
+      await playCodecAlertSound();
+    }
+    this.pendingExternalReply = text;
+    this.pendingExternalEmoji = "";
+    this.currentExternalEmoji = "";
+    this.transitionTo("external_answer");
   };
 
   private getNextMgsFactDelayMs = (): number => {
