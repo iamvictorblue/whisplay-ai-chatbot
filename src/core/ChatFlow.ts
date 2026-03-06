@@ -305,6 +305,7 @@ class ChatFlow implements ChatFlowContext {
     if (!command) {
       return false;
     }
+    console.log("[LocalCommand] Parsed:", command);
 
     switch (command.type) {
       case "add_reminder": {

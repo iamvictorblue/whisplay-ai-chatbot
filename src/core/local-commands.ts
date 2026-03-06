@@ -28,10 +28,14 @@ export const parseLocalCommand = (rawInput: string): LocalCommand | null => {
     return null;
   }
 
-  const normalized = cleaned.toLowerCase().trim().replace(/\?+$/, "");
+  const cleanedWithoutTailPunctuation = cleaned
+    .trim()
+    .replace(/[?!.,;:]+$/g, "")
+    .trim();
+  const normalized = cleanedWithoutTailPunctuation.toLowerCase();
 
-  const addReminderMatch = cleaned.match(
-    /^(?:please\s+)?(?:remind me(?:\s+(?:to|about))?|add\s+(?:a\s+)?(?:task|reminder)|create\s+(?:a\s+)?(?:task|reminder))\s+(.+)$/i,
+  const addReminderMatch = cleanedWithoutTailPunctuation.match(
+    /^(?:please[\s,]+)?(?:remind me(?:\s+(?:to|about))?|add\s+(?:a\s+)?(?:task|reminder)|create\s+(?:a\s+)?(?:task|reminder))\s+(.+)$/i,
   );
   if (addReminderMatch?.[1]) {
     const text = addReminderMatch[1].trim().replace(/[.]+$/, "");
@@ -59,39 +63,40 @@ export const parseLocalCommand = (rawInput: string): LocalCommand | null => {
   }
 
   if (
-    /^(?:clear|delete all|remove all)\s+(?:reminders|tasks)$/i.test(normalized)
+    /^(?:clear|delete all|remove all)\s+(?:my\s+)?(?:reminders|tasks)$/i.test(
+      normalized,
+    )
   ) {
     return { type: "clear_reminders" };
   }
 
   const startMissionMatch = normalized.match(
-    /^(?:start\s+(?:mission|pomodoro))(?:\s+for)?(?:\s+(\d+))?(?:\s*(?:min|mins|minute|minutes))?$/i,
+    /^(?:start\s+(?:mission|pomodoro))(?:\s+for)?(?:\s*[:\-]?\s*(\d+))?(?:\s*(?:min|mins|minute|minutes))?$/i,
   );
   if (startMissionMatch) {
     const minutes = parseIntSafe(startMissionMatch[1]);
     return { type: "start_mission", minutes };
   }
 
-  if (/^pause mission$/i.test(normalized)) {
+  if (/^pause(?:\s+the)?\s+mission$/i.test(normalized)) {
     return { type: "pause_mission" };
   }
 
-  if (/^resume mission$/i.test(normalized)) {
+  if (/^resume(?:\s+the)?\s+mission$/i.test(normalized)) {
     return { type: "resume_mission" };
   }
 
   if (
-    /^(?:mission status|status mission|what is mission status|what's mission status)$/i.test(
+    /^(?:mission status|status mission|what is(?: the)? mission status|what's(?: the)? mission status)$/i.test(
       normalized,
     )
   ) {
     return { type: "mission_status" };
   }
 
-  if (/^(?:abort|stop|cancel|end)\s+mission$/i.test(normalized)) {
+  if (/^(?:abort|stop|cancel|end)\s+(?:the\s+)?mission$/i.test(normalized)) {
     return { type: "abort_mission" };
   }
 
   return null;
 };
-
