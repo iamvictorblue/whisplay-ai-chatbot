@@ -36,9 +36,17 @@ get_env_value() {
   fi
 }
 
+is_true() {
+  case "$(echo "$1" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # load .env variables, exclude comments and empty lines
 # check if .env file exists
-initial_volume_level=114
+initial_volume_level=127
+force_max_volume_on_boot=true
 serve_ollama=false
 if [ -f ".env" ]; then
   # Load only SERVE_OLLAMA from .env (ignore comments/other vars)
@@ -50,6 +58,9 @@ if [ -f ".env" ]; then
 
   INITIAL_VOLUME_LEVEL=$(get_env_value "INITIAL_VOLUME_LEVEL")
   [ -n "$INITIAL_VOLUME_LEVEL" ] && export INITIAL_VOLUME_LEVEL
+
+  FORCE_MAX_VOLUME_ON_BOOT=$(get_env_value "FORCE_MAX_VOLUME_ON_BOOT")
+  [ -n "$FORCE_MAX_VOLUME_ON_BOOT" ] && export FORCE_MAX_VOLUME_ON_BOOT
 
   WHISPER_MODEL_SIZE=$(get_env_value "WHISPER_MODEL_SIZE")
   [ -n "$WHISPER_MODEL_SIZE" ] && export WHISPER_MODEL_SIZE
@@ -67,9 +78,17 @@ if [ -f ".env" ]; then
   if [ -n "$INITIAL_VOLUME_LEVEL" ]; then
     initial_volume_level=$INITIAL_VOLUME_LEVEL
   fi
+
+  if [ -n "$FORCE_MAX_VOLUME_ON_BOOT" ]; then
+    force_max_volume_on_boot=$FORCE_MAX_VOLUME_ON_BOOT
+  fi
 else
   echo ".env file not found, please create one based on .env.template."
   exit 1
+fi
+
+if is_true "$force_max_volume_on_boot"; then
+  initial_volume_level=127
 fi
 
 # Adjust initial volume

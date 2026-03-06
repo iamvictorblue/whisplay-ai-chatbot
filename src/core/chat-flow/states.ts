@@ -14,9 +14,8 @@ import {
   recordFileFormat,
   getDynamicVoiceDetectLevel,
   playCodecAlertSound,
-  playCodecPttDown,
-  playCodecPttUp,
   playCodecStaticBurst,
+  playCodecTriggerSound,
 } from "../../device/audio";
 import { chatWithLLMStream } from "../../cloud-api/server";
 import { isImMode } from "../../cloud-api/llm";
@@ -106,10 +105,9 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
     onButtonPressed(noop);
-    void playCodecPttDown();
+    void playCodecTriggerSound();
     const { result, stop } = recordAudioManually(ctx.currentRecordFilePath);
     onButtonReleased(() => {
-      void playCodecPttUp();
       stop();
       display({
         RGB: "#ff6800",

@@ -17,7 +17,6 @@ import { flowStates } from "./chat-flow/states";
 import { ChatFlowContext, FlowName } from "./chat-flow/types";
 import {
   playCodecAlertSound,
-  playCodecTriggerSound,
   playWakeupChime,
 } from "../device/audio";
 
@@ -310,8 +309,6 @@ class ChatFlow implements ChatFlowContext {
       return;
     }
     const fact = this.pickRandomMgsFact();
-    await playCodecTriggerSound();
-    await new Promise((resolve) => setTimeout(resolve, 140));
     await playCodecAlertSound();
 
     if (
